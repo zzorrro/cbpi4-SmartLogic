@@ -1,6 +1,6 @@
 include README.md
 include LICENSE
-include cbpi4_PIDMash/config.yaml
-include cbpi4_PIDMash/*.yaml
-include cbpi4_PIDMash/*.txt
-include cbpi4_PIDMash/*.rst
+include cbpi4_SmartLogic/config.yaml
+include cbpi4_SmartLogic/*.yaml
+include cbpi4_SmartLogic/*.txt
+include cbpi4_SmartLogic/*.rst

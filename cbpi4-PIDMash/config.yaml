@@ -1,7 +1,0 @@
-name: cbpi4-PIDMash
-version: 1.0.0
-description: PID kettle logic with dynamic power limiting for mash steps
-author: zzorrro
-url: https://github.com/zzorrro/cbpi4-PIDMash
-license: MIT
-cbpi_version: ">=4.0.0"

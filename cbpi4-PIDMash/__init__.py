@@ -8,16 +8,15 @@ import time
     Property.Number(label="I", configurable=True, default_value=0.2747, description="I Value of PID"),
     Property.Number(label="D", configurable=True, default_value=41.58, description="D Value of PID"),
     Property.Select(label="SampleTime", options=[2,5], description="PID Sample time in seconds. Default: 5"),
-    Property.Number(label="Max_Output", configurable=True, default_value=100, description="Maximum power outside mash range (%)"),
+    Property.Number(label="Max_Output", configurable=True, default_value=100, description="Power outside mash range (%) - direct heating"),
     Property.Number(label="Mash_Min_Temp", configurable=True, default_value=40, description="Minimum mash temperature (°C)"),
     Property.Number(label="Mash_Max_Temp", configurable=True, default_value=85, description="Maximum mash temperature (°C)"),
-    Property.Number(label="Mash_Max_Power", configurable=True, default_value=50, description="Maximum power during mash (%)")
+    Property.Number(label="Mash_Max_Power", configurable=True, default_value=50, description="Maximum PID power during mash (%)")
 ])
 class PIDMash(CBPiKettleLogic):
 
     async def on_stop(self):
         await self.actor_off(self.heater)
-        pass
 
     async def run(self):
         try:
@@ -35,33 +34,55 @@ class PIDMash(CBPiKettleLogic):
             
             self.kettle = self.get_kettle(self.id)
             self.heater = self.kettle.heater
-            heat_percent_old = max_out
             self.heater_actor = self.cbpi.actor.find_by_id(self.heater)
             
+            heat_percent_old = -1  # Для отслеживания изменений
+            pid_active = False  # Флаг: работает ли сейчас PID
+            pid = None  # Объект PID создаётся лениво
+
             await self.actor_on(self.heater, max_out)
 
-            # Создаём PID с базовой максимальной мощностью
-            pid = PIDArduino(sampleTime, p, i, d, 0, max_out)
-
             while self.running == True:
-                current_kettle_power = self.heater_actor.power
-                sensor_value = current_temp = self.get_sensor_value(self.kettle.sensor).get("value")
+                sensor_data = self.get_sensor_value(self.kettle.sensor)
+                if sensor_data is None:
+                    await asyncio.sleep(sampleTime)
+                    continue
+                    
+                current_temp = float(sensor_data.get("value", 0))
                 target_temp = self.get_kettle_target_temp(self.id)
+                current_kettle_power = self.heater_actor.power
                 
-                # === ДИНАМИЧЕСКОЕ ОГРАНИЧЕНИЕ МОЩНОСТИ ===
+                # === ГЛАВНАЯ ЛОГИКА ===
                 if mash_min <= current_temp <= mash_max:
+                    # ДИАПАЗОН ЗАТОРА: используем PID
+                    if not pid_active:
+                        # PID только что включился — создаём свежий, без накопленной интегральной составляющей
+                        pid = PIDArduino(sampleTime, p, i, d, 0, mash_max_power)
+                        pid_active = True
+                        logging.info(f"PIDMash: Entering mash range ({current_temp}°C). PID activated with max power {mash_max_power}%")
+                    
+                    # Динамически обновляем ограничение мощности PID
                     pid._outputMax = mash_max_power
+                    
+                    # Считаем PID
+                    heat_percent = pid.calc(current_temp, target_temp)
                 else:
-                    pid._outputMax = max_out
-                
-                heat_percent = pid.calc(sensor_value, target_temp)
+                    # ВНЕ ДИАПАЗОНА: прямой нагрев на полную мощность
+                    if pid_active:
+                        # PID только что выключился — сбрасываем флаг
+                        pid_active = False
+                        logging.info(f"PIDMash: Leaving mash range ({current_temp}°C). Direct heating at {max_out}%")
+                    
+                    heat_percent = max_out
 
-                if (heat_percent_old != heat_percent) or (heat_percent != current_kettle_power):
+                # Применяем мощность только если она изменилась
+                if heat_percent != heat_percent_old or heat_percent != current_kettle_power:
                     await self.actor_set_power(self.heater, heat_percent)
                     heat_percent_old = heat_percent
+                
                 await asyncio.sleep(sampleTime)
 
-        except asyncio.CancelledError as e:
+        except asyncio.CancelledError:
             pass
         except Exception as e:
             logging.error("PIDMash Error {}".format(e))

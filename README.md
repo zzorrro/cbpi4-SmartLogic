@@ -31,4 +31,3 @@
 
 ```bash
 pipx runpip cbpi4 install git+https://github.com/zzorrro/cbpi4-SmartLogic.git
-sudo systemctl restart craftbeerpi.service

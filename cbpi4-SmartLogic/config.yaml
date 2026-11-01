@@ -1,0 +1,7 @@
+name: cbpi4-SmartLogic
+version: 1.0.0
+description: Universal kettle heating logic for CBPi4 - direct heat, PID mash, and steady boil
+author: zzorrro
+url: https://github.com/zzorrro/cbpi4-SmartLogic
+license: MIT
+cbpi_version: ">=4.0.0"

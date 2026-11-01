@@ -4,16 +4,23 @@ from cbpi.api import *
 import time
 
 @parameters([
+    # PID настройки
     Property.Number(label="P", configurable=True, default_value=117.0795, description="P Value of PID"),
     Property.Number(label="I", configurable=True, default_value=0.2747, description="I Value of PID"),
     Property.Number(label="D", configurable=True, default_value=41.58, description="D Value of PID"),
     Property.Select(label="SampleTime", options=[2,5], description="PID Sample time in seconds. Default: 5"),
-    Property.Number(label="Max_Output", configurable=True, default_value=100, description="Power outside mash range (%) - direct heating"),
-    Property.Number(label="Mash_Min_Temp", configurable=True, default_value=40, description="Minimum mash temperature (°C)"),
-    Property.Number(label="Mash_Max_Temp", configurable=True, default_value=85, description="Maximum mash temperature (°C)"),
-    Property.Number(label="Mash_Max_Power", configurable=True, default_value=50, description="Maximum PID power during mash (%)")
+    
+    # Настройки мощности
+    Property.Number(label="Max_Output", configurable=True, default_value=100, description="Direct heating power outside mash range (%)"),
+    Property.Number(label="Mash_Max_Power", configurable=True, default_value=50, description="Max PID power during mash (%)"),
+    Property.Number(label="Boil_Power", configurable=True, default_value=60, description="Power for steady boil after transition (%)"),
+    
+    # Температурные пороги
+    Property.Number(label="Mash_Min_Temp", configurable=True, default_value=40, description="Start of mash range (°C)"),
+    Property.Number(label="Mash_Max_Temp", configurable=True, default_value=85, description="End of mash range (°C)"),
+    Property.Number(label="Boil_Transition_Temp", configurable=True, default_value=98, description="Temp to switch to boil power (°C)")
 ])
-class PIDMash(CBPiKettleLogic):
+class SmartLogic(CBPiKettleLogic):
 
     async def on_stop(self):
         await self.actor_off(self.heater)
@@ -23,22 +30,34 @@ class PIDMash(CBPiKettleLogic):
             self.TEMP_UNIT = self.get_config_value("TEMP_UNIT", "C")
             sampleTime = int(self.props.get("SampleTime", 5))
             
+            # PID коэффициенты
             p = float(self.props.get("P", 117.0795))
             i = float(self.props.get("I", 0.2747))
             d = float(self.props.get("D", 41.58))
-            max_out = int(self.props.get("Max_Output", 100))
             
+            # Мощности
+            max_out = int(self.props.get("Max_Output", 100))
+            mash_max_power = int(self.props.get("Mash_Max_Power", 50))
+            boil_power = int(self.props.get("Boil_Power", 60))
+            
+            # Температуры
             mash_min = float(self.props.get("Mash_Min_Temp", 40))
             mash_max = float(self.props.get("Mash_Max_Temp", 85))
-            mash_max_power = int(self.props.get("Mash_Max_Power", 50))
+            boil_transition = float(self.props.get("Boil_Transition_Temp", 98))
             
+            # Корректировка для Фаренгейта
+            if self.TEMP_UNIT == "F":
+                mash_min = (mash_min * 9/5) + 32
+                mash_max = (mash_max * 9/5) + 32
+                boil_transition = (boil_transition * 9/5) + 32
+
             self.kettle = self.get_kettle(self.id)
             self.heater = self.kettle.heater
             self.heater_actor = self.cbpi.actor.find_by_id(self.heater)
             
-            heat_percent_old = -1  # Для отслеживания изменений
-            pid_active = False  # Флаг: работает ли сейчас PID
-            pid = None  # Объект PID создаётся лениво
+            heat_percent_old = -1
+            pid_active = False
+            pid = None
 
             await self.actor_on(self.heater, max_out)
 
@@ -52,27 +71,30 @@ class PIDMash(CBPiKettleLogic):
                 target_temp = self.get_kettle_target_temp(self.id)
                 current_kettle_power = self.heater_actor.power
                 
-                # === ГЛАВНАЯ ЛОГИКА ===
-                if mash_min <= current_temp <= mash_max:
-                    # ДИАПАЗОН ЗАТОРА: используем PID
+                # === ГЛАВНАЯ ЛОГИКА (4 ЗОНЫ) ===
+                
+                # ЗОНА 4: Кипячение
+                if current_temp >= boil_transition:
+                    if pid_active:
+                        pid_active = False
+                        logging.info(f"SmartLogic: Boiling reached ({current_temp}°C). Direct power {boil_power}%")
+                    heat_percent = boil_power
+                    
+                # ЗОНА 2: Затор (PID)
+                elif mash_min <= current_temp <= mash_max:
                     if not pid_active:
-                        # PID только что включился — создаём свежий, без накопленной интегральной составляющей
                         pid = PIDArduino(sampleTime, p, i, d, 0, mash_max_power)
                         pid_active = True
-                        logging.info(f"PIDMash: Entering mash range ({current_temp}°C). PID activated with max power {mash_max_power}%")
+                        logging.info(f"SmartLogic: Entered mash range ({current_temp}°C). PID ON, max {mash_max_power}%")
                     
-                    # Динамически обновляем ограничение мощности PID
                     pid._outputMax = mash_max_power
-                    
-                    # Считаем PID
                     heat_percent = pid.calc(current_temp, target_temp)
-                else:
-                    # ВНЕ ДИАПАЗОНА: прямой нагрев на полную мощность
-                    if pid_active:
-                        # PID только что выключился — сбрасываем флаг
-                        pid_active = False
-                        logging.info(f"PIDMash: Leaving mash range ({current_temp}°C). Direct heating at {max_out}%")
                     
+                # ЗОНЫ 1 и 3: Прямой нагрев (до затора и между затором и кипением)
+                else:
+                    if pid_active:
+                        pid_active = False
+                        logging.info(f"SmartLogic: Left mash range ({current_temp}°C). Direct power {max_out}%")
                     heat_percent = max_out
 
                 # Применяем мощность только если она изменилась
@@ -85,7 +107,7 @@ class PIDMash(CBPiKettleLogic):
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logging.error("PIDMash Error {}".format(e))
+            logging.error("SmartLogic Error {}".format(e))
         finally:
             self.running = False
             await self.actor_off(self.heater)
@@ -147,4 +169,4 @@ class PIDArduino(object):
 
 
 def setup(cbpi):
-    cbpi.plugin.register("PIDMash", PIDMash)
+    cbpi.plugin.register("SmartLogic", SmartLogic)

@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='cbpi4-PIDMash',
+    name='cbpi4-SmartLogic',
     version='1.0.0',
-    description='PID kettle logic with dynamic power limiting for mash steps',
-    author='Sammy Brewery',
-    url='https://github.com/zzorrro/cbpi4-PIDMash',
+    description='Universal kettle heating logic for CBPi4: direct heat, PID mash, and steady boil',
+    author='zzorrro',
+    url='https://github.com/zzorrro/cbpi4-SmartLogic',
     license='MIT',
     packages=find_packages(),
     include_package_data=True,

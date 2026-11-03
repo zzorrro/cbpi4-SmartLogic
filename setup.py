@@ -4,7 +4,7 @@ setup(
     name='cbpi4-SmartLogic',
     version='1.0.0',
     description='Universal kettle heating logic for CBPi4: direct heat, PID mash, and steady boil',
-    author='zzorrro',
+    author='Sammy Brewery',
     url='https://github.com/zzorrro/cbpi4-SmartLogic',
     license='MIT',
     packages=find_packages(),

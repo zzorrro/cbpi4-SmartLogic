@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from cbpi.api import *
+from cbpi.api.dataclasses import NotificationType  # ← ДОБАВЛЕН ЭТОТ ИМПОРТ
 import time
 
 @parameters([
@@ -74,7 +75,11 @@ class SmartLogic(CBPiKettleLogic):
                     
                 current_temp = float(sensor_data.get("value", 0))
                 target_temp = self.get_kettle_target_temp(self.id)
-                current_kettle_power = self.heater_actor.power
+                
+                try:
+                    current_kettle_power = float(self.heater_actor.power)
+                except:
+                    current_kettle_power = 0
                 
                 # === ГЛАВНАЯ ЛОГИКА (4 ЗОНЫ) ===
                 

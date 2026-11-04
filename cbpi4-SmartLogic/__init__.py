@@ -52,9 +52,10 @@ class SmartLogic(CBPiKettleLogic):
             pid_active = False
             pid = None
 
+            # Переменные состояния
             self.manual_override_active = False
             self.manual_override_power = 0
-            self.last_auto_power = -1
+            self.current_phase = None
 
             await self.actor_on(self.heater, max_out)
 
@@ -72,48 +73,62 @@ class SmartLogic(CBPiKettleLogic):
                 except:
                     current_kettle_power = 0
                 
+                # === ШАГ 1: Определяем текущую фазу и желаемую мощность ===
                 if current_temp >= boil_transition:
+                    new_phase = "BOIL"
                     if pid_active:
                         pid_active = False
-                        logger.info(f"SmartLogic: Boiling reached ({current_temp}°C). Direct power logic active.")
-
-                    if not self.manual_override_active:
-                        if self.last_auto_power == -1:
-                            self.last_auto_power = boil_power
-
-                        if abs(current_kettle_power - self.last_auto_power) > 0.5:
-                            self.manual_override_active = True
-                            self.manual_override_power = current_kettle_power
-                            # ПРОСТОЙ И НАДЕЖНЫЙ ЛОГ ВМЕСТО УВЕДОМЛЕНИЯ
-                            logger.info(f"SmartLogic: Manual override activated at {current_kettle_power}%")
-
-                    if self.manual_override_active:
-                        heat_percent = self.manual_override_power
-                    else:
-                        heat_percent = boil_power
-                        self.last_auto_power = heat_percent
-                        
+                        logger.info(f"SmartLogic: Boiling reached ({current_temp}°C).")
+                    desired_auto_power = boil_power
+                    
+                elif mash_min <= current_temp <= mash_max:
+                    new_phase = "MASH"
+                    if not pid_active:
+                        pid = PIDArduino(sampleTime, p, i, d, 0, mash_max_power)
+                        pid_active = True
+                        logger.info(f"SmartLogic: Entered mash range. PID ON.")
+                    pid._outputMax = mash_max_power
+                    desired_auto_power = pid.calc(current_temp, target_temp)
+                    
                 else:
-                    if self.manual_override_active:
-                        self.manual_override_active = False
-                        self.last_auto_power = -1
-                        logger.info("SmartLogic: Temp dropped below boil transition. Manual override reset.")
+                    new_phase = "HEAT"
+                    if pid_active:
+                        pid_active = False
+                        logger.info(f"SmartLogic: Left mash range.")
+                    desired_auto_power = max_out
 
-                    if mash_min <= current_temp <= mash_max:
-                        if not pid_active:
-                            pid = PIDArduino(sampleTime, p, i, d, 0, mash_max_power)
-                            pid_active = True
-                            logger.info(f"SmartLogic: Entered mash range ({current_temp}°C). PID ON, max {mash_max_power}%")
-                        
-                        pid._outputMax = mash_max_power
-                        heat_percent = pid.calc(current_temp, target_temp)
+                # === ШАГ 2: Произошла ли смена фазы? ===
+                if self.current_phase != new_phase:
+                    # Фаза изменилась! Принудительно сбрасываем ручное управление
+                    self.manual_override_active = False
+                    self.current_phase = new_phase
+                    heat_percent = desired_auto_power
+                    logger.info(f"PHASE CHANGE to {new_phase}! Manual override reset. Power set to {desired_auto_power}%")
+                
+                else:
+                    # Фаза та же. Проверяем, нужно ли блокировать ручное управление.
+                    
+                    if new_phase == "MASH":
+                        # БЛОКИРОВКА: Во время затора PID имеет полный контроль.
+                        if self.manual_override_active:
+                            self.manual_override_active = False
+                            logger.info("SmartLogic: Mash phase active. Manual override BLOCKED. PID is in control.")
+                        heat_percent = desired_auto_power
                         
                     else:
-                        if pid_active:
-                            pid_active = False
-                            logger.info(f"SmartLogic: Left mash range ({current_temp}°C). Direct power {max_out}%")
-                        heat_percent = max_out
+                        # HEAT или BOIL: Разрешаем ручное вмешательство.
+                        if not self.manual_override_active:
+                            if abs(current_kettle_power - desired_auto_power) > 0.5:
+                                self.manual_override_active = True
+                                self.manual_override_power = current_kettle_power
+                                logger.info(f"SmartLogic: Manual override at {current_kettle_power}%")
 
+                        if self.manual_override_active:
+                            heat_percent = self.manual_override_power
+                        else:
+                            heat_percent = desired_auto_power
+
+                # === ШАГ 3: Применяем мощность ===
                 if heat_percent != heat_percent_old or heat_percent != current_kettle_power:
                     await self.actor_set_power(self.heater, heat_percent)
                     heat_percent_old = heat_percent
